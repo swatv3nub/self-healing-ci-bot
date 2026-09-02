@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/swatv3nub/self-healing-ci-bot/internal/actions"
 	"github.com/swatv3nub/self-healing-ci-bot/internal/classifier"
@@ -27,12 +29,72 @@ var (
 	glProvider     providers.Provider
 	flakinessStore *store.FlakinessStore
 	executor       *actions.Executor
+	rateLimiter    *tokenBucket
 )
+
+// tokenBucket implements a simple token bucket rate limiter
+type tokenBucket struct {
+	mu       sync.Mutex
+	rate     float64 // tokens per second
+	burst    int
+	tokens   float64
+	lastTime time.Time
+}
+
+// newTokenBucket creates a new token bucket rate limiter
+func newTokenBucket(rate float64, burst int) *tokenBucket {
+	if rate <= 0 {
+		return nil
+	}
+	return &tokenBucket{
+		rate:   rate,
+		burst:  burst,
+		tokens: float64(burst),
+		lastTime: time.Now(),
+	}
+}
+
+// allow checks if a request is allowed and consumes a token
+func (tb *tokenBucket) allow() bool {
+	if tb == nil {
+		return true // rate limiting disabled
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(tb.lastTime).Seconds()
+	tb.tokens = min(tb.tokens+elapsed*tb.rate, float64(tb.burst))
+	tb.lastTime = now
+
+	if tb.tokens >= 1 {
+		tb.tokens--
+		return true
+	}
+	return false
+}
+
+// rateLimitMiddleware wraps a handler with rate limiting
+func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if rateLimiter != nil && !rateLimiter.allow() {
+			log.Debug("Rate limit exceeded")
+			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
 
 func main() {
 	// Load configuration
 	cfg = config.Load()
 	log = logger.New(cfg.Debug)
+
+	// Validate configuration
+	if err := validateConfig(cfg); err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
 
 	log.Infof("Starting Self-Healing CI Bot on port %d", cfg.Port)
 
@@ -54,15 +116,24 @@ func main() {
 
 	// Initialize stores and executors
 	flakinessStore = store.NewFlakinessStore()
+	var execProvider providers.Provider
 	if ghProvider != nil {
-		executor = actions.NewExecutor(ghProvider, flakinessStore, cfg.MaxRetries, cfg.RetryBackoffMs)
+		execProvider = ghProvider
+	} else if glProvider != nil {
+		execProvider = glProvider
 	}
+	if execProvider != nil {
+		executor = actions.NewExecutor(execProvider, flakinessStore, cfg.MaxRetries, cfg.RetryBackoffMs)
+	}
+
+	// Initialize rate limiter
+	rateLimiter = newTokenBucket(cfg.WebhookRateLimit, 10)
 
 	// Setup HTTP routes
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/metrics", metricsHandler)
-	http.HandleFunc("/webhook/github", webhookGitHubHandler)
-	http.HandleFunc("/webhook/gitlab", webhookGitLabHandler)
+	http.HandleFunc("/webhook/github", rateLimitMiddleware(webhookGitHubHandler))
+	http.HandleFunc("/webhook/gitlab", rateLimitMiddleware(webhookGitLabHandler))
 
 	// Start server
 	addr := fmt.Sprintf(":%d", cfg.Port)
@@ -86,6 +157,39 @@ func main() {
 	}
 
 	log.Info("Server stopped")
+}
+
+// validateConfig validates the configuration
+func validateConfig(cfg *config.Config) error {
+	// At least one provider must be configured
+	if cfg.GitHubToken == "" && cfg.GitLabToken == "" {
+		return fmt.Errorf("at least one provider token must be configured (GITHUB_TOKEN or GITLAB_TOKEN)")
+	}
+
+	// Webhook secret is required when providers are configured
+	if cfg.WebhookSecret == "" {
+		return fmt.Errorf("BOT_SECRET is required for webhook signature verification")
+	}
+
+	// Validate port range
+	if cfg.Port <= 0 || cfg.Port > 65535 {
+		return fmt.Errorf("invalid BOT_PORT: must be between 1 and 65535")
+	}
+
+	// Validate retry settings
+	if cfg.MaxRetries < 0 {
+		return fmt.Errorf("MAX_RETRIES must be non-negative")
+	}
+	if cfg.RetryBackoffMs < 0 {
+		return fmt.Errorf("RETRY_BACKOFF_MS must be non-negative")
+	}
+
+	// Validate flaky threshold
+	if cfg.FlakyThreshold < 0 || cfg.FlakyThreshold > 1 {
+		return fmt.Errorf("FLAKY_THRESHOLD must be between 0.0 and 1.0")
+	}
+
+	return nil
 }
 
 // healthHandler returns service health status
@@ -157,11 +261,22 @@ func webhookGitHubHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Infof("GitHub failure detected: run %s, PR %d", event.RunID, event.PRNumber)
 
+	// Fetch logs if not present in event
+	logs := event.Logs
+	if logs == "" && event.RunID != "" && event.JobID != "" {
+		fetchedLogs, err := ghProvider.FetchLogs(event.RunID, event.JobID)
+		if err != nil {
+			log.Errorf("Failed to fetch GitHub logs: %v", err)
+		} else {
+			logs = fetchedLogs
+		}
+	}
+
 	// Classify the failure (heuristic first)
 	classif := classifier.ClassifyHeuristic(classifier.FailureLogInput{
 		Provider: "github",
 		JobName:  event.JobName,
-		Logs:     event.Logs,
+		Logs:     logs,
 	})
 
 	log.Infof("Classification: %s (confidence: %.2f)", classif.Category, classif.Confidence)
@@ -196,6 +311,12 @@ func webhookGitLabHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	if !verifyGitLabSignature(r.Header.Get("X-Gitlab-Token"), cfg.WebhookSecret) {
+		log.Error("GitLab webhook signature verification failed")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	if glProvider == nil {
 		http.Error(w, "GitLab provider not configured", http.StatusServiceUnavailable)
 		return
@@ -220,12 +341,13 @@ func webhookGitLabHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Infof("Classification: %s (confidence: %.2f)", classif.Category, classif.Confidence)
 
-	// Execute actions
-	exec := actions.NewExecutor(glProvider, flakinessStore, cfg.MaxRetries, cfg.RetryBackoffMs)
-	if err := exec.ExecuteActions(event, &classif); err != nil {
-		log.Errorf("Action execution failed: %v", err)
-		http.Error(w, "Action failed", http.StatusInternalServerError)
-		return
+	// Execute actions using shared executor
+	if executor != nil {
+		if err := executor.ExecuteActions(event, &classif); err != nil {
+			log.Errorf("Action execution failed: %v", err)
+			http.Error(w, "Action failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -243,6 +365,14 @@ func verifyWebhookSignature(payload []byte, signature, secret string) bool {
 
 	expected := "sha256=" + hex.EncodeToString(computeHMAC(payload, secret))
 	return hmac.Equal([]byte(signature), []byte(expected))
+}
+
+// verifyGitLabSignature validates GitLab webhook token
+func verifyGitLabSignature(token, secret string) bool {
+	if secret == "" || token == "" {
+		return false
+	}
+	return hmac.Equal([]byte(token), []byte(secret))
 }
 
 // computeHMAC calculates HMAC-SHA256

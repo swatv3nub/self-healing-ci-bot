@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -18,10 +19,18 @@ func New(debug bool) *Logger {
 }
 
 func (l *Logger) logf(level string, format string, args ...interface{}) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	if level == "DEBUG" && !l.debug {
+		return
+	}
+	timestamp := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
-	logLine := fmt.Sprintf("[%s] [%s] %s", timestamp, level, msg)
-	log.Println(logLine)
+	entry := map[string]interface{}{
+		"timestamp": timestamp,
+		"level":     level,
+		"message":   msg,
+	}
+	jsonBytes, _ := json.Marshal(entry)
+	log.Println(string(jsonBytes))
 }
 
 // Info logs an info-level message
@@ -46,16 +55,12 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 
 // Debug logs a debug-level message (only if debug is enabled)
 func (l *Logger) Debug(msg string) {
-	if l.debug {
-		l.logf("DEBUG", msg)
-	}
+	l.logf("DEBUG", msg)
 }
 
 // Debugf logs a formatted debug message
 func (l *Logger) Debugf(format string, args ...interface{}) {
-	if l.debug {
-		l.logf("DEBUG", format, args...)
-	}
+	l.logf("DEBUG", format, args...)
 }
 
 // Fatal logs and exits

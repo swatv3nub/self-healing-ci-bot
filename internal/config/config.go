@@ -16,9 +16,10 @@ type Config struct {
 	// LLM
 	OpenAIAPIKey string
 	// Behavior
-	MaxRetries     int
-	FlakyThreshold float64 // fail rate above which to flag as flaky (0.0-1.0)
-	RetryBackoffMs int
+	MaxRetries      int
+	FlakyThreshold  float64 // fail rate above which to flag as flaky (0.0-1.0)
+	RetryBackoffMs  int
+	WebhookRateLimit float64 // requests per second (0 = disabled)
 	// Debug
 	Debug bool
 }
@@ -26,15 +27,16 @@ type Config struct {
 // Load reads configuration from environment variables
 func Load() *Config {
 	cfg := &Config{
-		Port:           parseInt(os.Getenv("BOT_PORT"), 8080),
-		WebhookSecret:  os.Getenv("BOT_SECRET"),
-		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
-		GitLabToken:    os.Getenv("GITLAB_TOKEN"),
-		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
-		MaxRetries:     parseInt(os.Getenv("MAX_RETRIES"), 2),
-		FlakyThreshold: parseFloat(os.Getenv("FLAKY_THRESHOLD"), 0.4),
-		RetryBackoffMs: parseInt(os.Getenv("RETRY_BACKOFF_MS"), 1000),
-		Debug:          parseBool(os.Getenv("DEBUG"), false),
+		Port:             parseInt(os.Getenv("BOT_PORT"), 8080),
+		WebhookSecret:    os.Getenv("BOT_SECRET"),
+		GitHubToken:      os.Getenv("GITHUB_TOKEN"),
+		GitLabToken:      os.Getenv("GITLAB_TOKEN"),
+		OpenAIAPIKey:     os.Getenv("OPENAI_API_KEY"),
+		MaxRetries:       parseInt(os.Getenv("MAX_RETRIES"), 2),
+		FlakyThreshold:   parseFloat(os.Getenv("FLAKY_THRESHOLD"), 0.4),
+		RetryBackoffMs:   parseInt(os.Getenv("RETRY_BACKOFF_MS"), 1000),
+		WebhookRateLimit: parseFloat(os.Getenv("WEBHOOK_RATE_LIMIT"), 0),
+		Debug:            parseBool(os.Getenv("DEBUG"), false),
 	}
 	return cfg
 }

@@ -1,11 +1,13 @@
 package classifier
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // LLMClassifier interface for plugging in different LLM providers
@@ -38,23 +40,23 @@ func (o *OpenAIClassifier) Classify(ctx context.Context, input FailureLogInput) 
 	// Construct the prompt
 	prompt := constructClassificationPrompt(input)
 
-	// Call OpenAI API (simplified - in production, use official SDK)
-	// For now, return a placeholder result
-	// In a real implementation, you'd use github.com/sashabaranov/go-openai
-
-	result := &ClassificationResult{
-		Category:   CategoryReal,
-		Confidence: 0.75,
-		Evidence:   []string{"Reviewed by LLM"},
-		Reasoning:  "LLM analysis: " + prompt[:min(len(prompt), 100)],
-		Method:     "llm",
+	// Build request
+	req := &openaiRequest{
+		Model: o.model,
+		Messages: []openaiMsg{
+			{Role: "system", Content: "You are a CI failure classifier. Respond only with valid JSON."},
+			{Role: "user", Content: prompt},
+		},
 	}
 
-	_ = ctx // use context for cancellation
-	_ = input
-	_ = prompt
+	// Call OpenAI API
+	resp, err := callOpenAI(ctx, o.apiKey, o.baseURL, req)
+	if err != nil {
+		return nil, err
+	}
 
-	return result, nil
+	// Parse response
+	return parseOpenAIResponse(resp)
 }
 
 func constructClassificationPrompt(input FailureLogInput) string {
@@ -106,12 +108,7 @@ type openaiResponse struct {
 }
 
 // parseOpenAIResponse extracts the classification from OpenAI response
-func parseOpenAIResponse(respBody []byte) (*ClassificationResult, error) {
-	var resp openaiResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, err
-	}
-
+func parseOpenAIResponse(resp *openaiResponse) (*ClassificationResult, error) {
 	if resp.Error != nil {
 		return nil, errors.New("openai error: " + resp.Error.Message)
 	}
@@ -154,14 +151,35 @@ func parseOpenAIResponse(respBody []byte) (*ClassificationResult, error) {
 	}, nil
 }
 
-// callOpenAI makes the HTTP request to OpenAI (placeholder)
-func callOpenAI(ctx context.Context, apiKey string, req *openaiRequest) (*openaiResponse, error) {
-	_ = ctx
-	_ = apiKey
-	_ = req
-	_ = http.MethodPost
+// callOpenAI makes the HTTP request to OpenAI
+func callOpenAI(ctx context.Context, apiKey, baseURL string, req *openaiRequest) (*openaiResponse, error) {
+	jsonBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
 
-	// Placeholder for actual OpenAI API call
-	// Use github.com/sashabaranov/go-openai in production
-	return &openaiResponse{}, nil
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New("OpenAI API error: " + resp.Status)
+	}
+
+	var openaiResp openaiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&openaiResp); err != nil {
+		return nil, err
+	}
+
+	return &openaiResp, nil
 }

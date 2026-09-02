@@ -88,7 +88,7 @@ func (gp *GitLabProvider) RetryJob(runID, jobID string) error {
 		return err
 	}
 
-	job, _, err := gp.client.Jobs.RetryJob(gp.projectID, id, &gitlab.RetryJobOptions{}, gitlab.WithContext(ctx))
+	job, _, err := gp.client.Jobs.RetryJob(gp.projectID, id, gitlab.WithContext(ctx))
 	if err != nil {
 		return err
 	}

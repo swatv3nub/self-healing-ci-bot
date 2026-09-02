@@ -1,10 +1,13 @@
 package providers
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/google/go-github/v60/github"
 	"golang.org/x/oauth2"
@@ -88,9 +91,72 @@ func (gp *GitHubProvider) ParseWebhookPayload(payload []byte) (*CIEvent, error) 
 
 // FetchLogs retrieves the workflow run logs from GitHub
 func (gp *GitHubProvider) FetchLogs(runID, jobID string) (string, error) {
-	// For GitHub, we'd fetch the logs URL and download
-	// This is a simplified placeholder
-	return fmt.Sprintf("Logs for GitHub run %s job %s", runID, jobID), nil
+	ctx := context.Background()
+	var runIDInt int64
+	_, err := fmt.Sscanf(runID, "%d", &runIDInt)
+	if err != nil {
+		return "", err
+	}
+
+	// Get the logs download URL
+	logsURL, _, err := gp.client.Actions.GetWorkflowRunLogs(ctx, gp.repoOwner, gp.repoName, runIDInt, 5)
+	if err != nil {
+		return "", err
+	}
+
+	// Download the logs (zip file)
+	resp, err := http.Get(logsURL.String())
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download logs: %s", resp.Status)
+	}
+
+	// Read the zip content
+	zipData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract and concatenate log files
+	return extractLogsFromZip(zipData)
+}
+
+// extractLogsFromZip extracts text content from GitHub Actions logs zip
+func extractLogsFromZip(zipData []byte) (string, error) {
+	reader, err := zip.NewReader(strings.NewReader(string(zipData)), int64(len(zipData)))
+	if err != nil {
+		return "", err
+	}
+
+	var logs strings.Builder
+	for _, file := range reader.File {
+		// Skip directories
+		if file.FileInfo().IsDir() {
+			continue
+		}
+
+		// Open file in zip
+		rc, err := file.Open()
+		if err != nil {
+			continue
+		}
+
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			continue
+		}
+
+		logs.WriteString(fmt.Sprintf("=== %s ===\n", file.Name))
+		logs.Write(content)
+		logs.WriteString("\n")
+	}
+
+	return logs.String(), nil
 }
 
 // RetryJob triggers a workflow_run re-run
@@ -102,13 +168,10 @@ func (gp *GitHubProvider) RetryJob(runID, jobID string) error {
 		return err
 	}
 
-	// Rerun the workflow
-	resp, err := gp.client.Actions.RerunWorkflow(ctx, gp.repoOwner, gp.repoName, id)
+	// Rerun the workflow (rerun all jobs)
+	_, err = gp.client.Actions.RerunWorkflowByID(ctx, gp.repoOwner, gp.repoName, id)
 	if err != nil {
 		return err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to rerun workflow: status %d", resp.StatusCode)
 	}
 
 	return nil

@@ -36,6 +36,20 @@ func (ra *RetryAction) Execute() error {
 	return ra.Provider.RetryJob(ra.RunID, ra.JobID)
 }
 
+// ExecuteWithResult performs the retry and returns success status
+func (ra *RetryAction) ExecuteWithResult() (bool, error) {
+	if ra.AttemptCount >= ra.MaxRetries {
+		return false, fmt.Errorf("max retries (%d) exceeded", ra.MaxRetries)
+	}
+
+	// Exponential backoff: backoff * 2^attempt
+	backoff := time.Duration(ra.BackoffMs*(1<<uint(ra.AttemptCount))) * time.Millisecond
+	time.Sleep(backoff)
+
+	err := ra.Provider.RetryJob(ra.RunID, ra.JobID)
+	return err == nil, err
+}
+
 // ReportAction posts a failure report to a PR
 type ReportAction struct {
 	Provider       providers.Provider

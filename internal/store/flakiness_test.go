@@ -24,9 +24,9 @@ func TestRecordResult(t *testing.T) {
 func TestIsFlakyByThreshold(t *testing.T) {
 	store := NewFlakinessStore()
 
-	// Fail 7 out of 10 times
+	// Fail 7 out of 10 times (fail rate = 0.7)
 	for i := 0; i < 10; i++ {
-		store.RecordResult("flaky_test", i >= 3) // first 3 pass, rest fail
+		store.RecordResult("flaky_test", i < 3) // first 3 pass, rest fail (7 failures)
 	}
 
 	assert.False(t, store.IsFlakyByThreshold("flaky_test", 0.75))

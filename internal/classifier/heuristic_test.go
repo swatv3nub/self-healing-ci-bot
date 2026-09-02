@@ -95,7 +95,7 @@ Build failed with exit code 2`,
 	result := ClassifyHeuristic(input)
 	assert.Equal(t, CategoryReal, result.Category)
 	assert.NotNil(t, result.Evidence)
-	assert.Len(t, result.Evidence, 3)
+	assert.Len(t, result.Evidence, 2)
 }
 
 func TestExtractRelevantLines(t *testing.T) {

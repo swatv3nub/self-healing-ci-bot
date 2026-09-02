@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -13,7 +14,7 @@ var (
 	}{
 		{"connection_reset", regexp.MustCompile(`(?i)ECONNRESET|connection.*reset|socket.*hang`)},
 		{"connection_refused", regexp.MustCompile(`(?i)ECONNREFUSED|connection.*refused`)},
-		{"timeout", regexp.MustCompile(`(?i)context.*deadline.*exceeded|timeout|timed out`)},
+		{"timeout", regexp.MustCompile(`(?i)context.*deadline.*exceeded|timed out`)},
 		{"rate_limit", regexp.MustCompile(`(?i)rate.*limit|429|too many requests`)},
 		{"dns_failure", regexp.MustCompile(`(?i)ENOTFOUND|name.*resolution|dns.*failed`)},
 		{"registry_error", regexp.MustCompile(`(?i)registry.*error|docker pull|image pull|image not found`)},
@@ -40,7 +41,7 @@ func ClassifyHeuristic(input FailureLogInput) ClassificationResult {
 
 	// Check infra patterns
 	for _, p := range infraPatterns {
-		if matches := p.pattern.FindAllString(input.Logs, -1); len(matches) > 0 {
+		if matches := p.pattern.FindAllString(logs, -1); len(matches) > 0 {
 			return ClassificationResult{
 				Category:   CategoryInfra,
 				Confidence: 0.95,
@@ -161,39 +162,7 @@ func parseLineNo(s string) int {
 	return n
 }
 
+// stringifyInt converts an integer to string using standard library
 func stringifyInt(n int) string {
-	return strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			switch r {
-			case '0':
-				return '0'
-			case '1':
-				return '1'
-			case '2':
-				return '2'
-			case '3':
-				return '3'
-			case '4':
-				return '4'
-			case '5':
-				return '5'
-			case '6':
-				return '6'
-			case '7':
-				return '7'
-			case '8':
-				return '8'
-			case '9':
-				return '9'
-			}
-		}
-		return r
-	}, string(rune(n)+rune('0')))
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return strconv.Itoa(n)
 }
