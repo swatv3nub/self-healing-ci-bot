@@ -1,0 +1,18 @@
+name: self-healing-bot-example
+on:
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  notify_bot:
+    runs-on: ubuntu-latest
+    if: ${{ failure() }}
+    steps:
+      - name: Notify self-healing bot
+        run: |
+          curl -X POST https://your-bot-url/webhook/github \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: sha256=$(echo -n '${{ github.event.workflow_run }}' | openssl dgst -sha256 -hmac '${{ secrets.BOT_WEBHOOK_SECRET }}' | sed 's/^.* //')" \
+            -d '${{ toJson(github.event) }}'

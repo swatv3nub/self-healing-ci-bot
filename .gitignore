@@ -1,0 +1,9 @@
+.env
+.vscode/
+bin/
+dist/
+*.log
+*.swp
+*.swo
+.DS_Store
+agent files/
